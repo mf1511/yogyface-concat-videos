@@ -58,13 +58,42 @@ def compress_video(input_path, output_path, target_size_mb=100):
     try:
         print(f"Compression de la vidéo (cible: {target_size_mb}MB)...")
         
+        # Check if ffmpeg and ffprobe are available
+        try:
+            subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+            print("✓ ffmpeg available")
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            print(f"✗ ffmpeg not available: {e}")
+            return False
+            
+        try:
+            subprocess.run(['ffprobe', '-version'], capture_output=True, check=True)
+            print("✓ ffprobe available")
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            print(f"✗ ffprobe not available: {e}")
+            return False
+        
         # Get video duration for bitrate calculation
+        print(f"🔍 Getting video duration for: {input_path}")
         duration_cmd = [
             'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
             '-of', 'csv=p=0', input_path
         ]
-        duration_result = subprocess.run(duration_cmd, capture_output=True, text=True, check=True)
-        duration = float(duration_result.stdout.strip())
+        
+        try:
+            duration_result = subprocess.run(duration_cmd, capture_output=True, text=True, check=True)
+            duration_str = duration_result.stdout.strip()
+            print(f"📏 Raw duration output: '{duration_str}'")
+            
+            if not duration_str:
+                print("⚠ Empty duration output, using fallback duration")
+                duration = 60  # Fallback duration
+            else:
+                duration = float(duration_str)
+                print(f"⏱️ Video duration: {duration:.2f} seconds")
+        except (subprocess.CalledProcessError, ValueError) as e:
+            print(f"⚠ Failed to get duration: {e}, using fallback")
+            duration = 60  # Fallback duration
         
         # More aggressive initial calculation (85% of target to ensure we stay under)
         target_size_mb_adjusted = target_size_mb * 0.85
