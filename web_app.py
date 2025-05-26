@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Web API for video concatenation service with compression support
+Last updated: 2025-05-26 19:20:00 - Force deployment with compression
 """
 
 import os
