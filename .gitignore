@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.mp4
+*.avi
+*.mkv
+*.mov
+*.wmv
+video_finale.mp4
+temp_*
+video_concat_*
+
+# Railway
+.railway/ 
