@@ -12,6 +12,8 @@ import argparse
 from urllib.parse import urlparse
 import requests
 from pathlib import Path
+import time
+import shutil
 
 def download_video(url, output_path):
     """Télécharge une vidéo depuis une URL"""
@@ -50,146 +52,137 @@ def get_file_size_mb(file_path):
     except OSError:
         return 0
 
-def compress_video(input_path, output_path, target_size_mb=100):
+def compress_video(input_path, target_size_mb=100, max_attempts=4):
     """
-    Compresse une vidéo pour qu'elle fasse moins de target_size_mb MB
-    Uses iterative compression to ensure target is met
+    Compresse une vidéo en utilisant une approche itérative pour atteindre la taille cible
+    tout en préservant la meilleure qualité possible
     """
+    print(f"🎬 Démarrage compression: {os.path.basename(input_path)}")
+    
+    # Vérification des outils
+    if not check_ffmpeg_available():
+        print("❌ ffmpeg/ffprobe non disponible")
+        return False
+    
+    # Taille originale
+    original_size = os.path.getsize(input_path)
+    original_mb = original_size / (1024 * 1024)
+    print(f"📊 Taille originale: {original_mb:.1f} MB")
+    
+    if original_mb <= target_size_mb:
+        print(f"✅ Fichier déjà sous {target_size_mb}MB")
+        return True
+    
+    # Obtenir la durée de la vidéo
+    duration = get_video_duration(input_path)
+    if not duration:
+        print("❌ Impossible d'obtenir la durée de la vidéo")
+        return False
+    
+    print(f"⏱️  Durée: {duration:.1f} secondes")
+    
+    # Paramètres de compression progressive
+    compression_attempts = [
+        {"crf": 23, "preset": "medium", "name": "Qualité élevée"},
+        {"crf": 25, "preset": "medium", "name": "Qualité moyenne-élevée"},
+        {"crf": 27, "preset": "fast", "name": "Qualité moyenne"},
+        {"crf": 30, "preset": "fast", "name": "Qualité acceptable"}
+    ]
+    
+    temp_output = None
+    
     try:
-        print(f"Compression de la vidéo (cible: {target_size_mb}MB)...")
-        
-        # Check if ffmpeg and ffprobe are available
-        try:
-            subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-            print("✓ ffmpeg available")
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            print(f"✗ ffmpeg not available: {e}")
-            return False
+        for attempt, params in enumerate(compression_attempts, 1):
+            print(f"\n🔄 Tentative {attempt}/{len(compression_attempts)}: {params['name']}")
             
-        try:
-            subprocess.run(['ffprobe', '-version'], capture_output=True, check=True)
-            print("✓ ffprobe available")
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            print(f"✗ ffprobe not available: {e}")
-            return False
-        
-        # Get video duration for bitrate calculation
-        print(f"🔍 Getting video duration for: {input_path}")
-        duration_cmd = [
-            'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
-            '-of', 'csv=p=0', input_path
-        ]
-        
-        try:
-            duration_result = subprocess.run(duration_cmd, capture_output=True, text=True, check=True)
-            duration_str = duration_result.stdout.strip()
-            print(f"📏 Raw duration output: '{duration_str}'")
+            # Calcul du bitrate cible pour cette tentative
+            target_size_bits = target_size_mb * 8 * 1024 * 1024
+            # Réduction progressive: 95%, 90%, 85%, 80% de la taille cible
+            size_factor = 1.0 - (attempt * 0.05)
+            adjusted_target_bits = target_size_bits * size_factor
+            target_bitrate = int((adjusted_target_bits / duration) * 0.85)  # 85% pour vidéo, 15% pour audio
             
-            if not duration_str:
-                print("⚠ Empty duration output, using fallback duration")
-                duration = 60  # Fallback duration
-            else:
-                duration = float(duration_str)
-                print(f"⏱️ Video duration: {duration:.2f} seconds")
-        except (subprocess.CalledProcessError, ValueError) as e:
-            print(f"⚠ Failed to get duration: {e}, using fallback")
-            duration = 60  # Fallback duration
-        
-        # More aggressive initial calculation (85% of target to ensure we stay under)
-        target_size_mb_adjusted = target_size_mb * 0.85
-        
-        # Calculate target bitrate (in kbps) for adjusted target file size
-        target_video_bitrate = int((target_size_mb_adjusted * 8 * 1024) / duration * 0.85)
-        target_audio_bitrate = min(96, int((target_size_mb_adjusted * 8 * 1024) / duration * 0.15))
-        
-        # Ensure minimum quality but be more aggressive
-        target_video_bitrate = max(target_video_bitrate, 300)  # Lower minimum for aggressive compression
-        target_audio_bitrate = max(target_audio_bitrate, 48)   # Lower audio quality if needed
-        
-        print(f"Bitrates calculés - Vidéo: {target_video_bitrate}kbps, Audio: {target_audio_bitrate}kbps")
-        
-        # More aggressive compression settings for Railway efficiency
-        crf_value = 30  # Start more aggressive (was 28)
-        
-        # Try up to 2 compression attempts instead of 3 (faster)
-        for attempt in range(2):
-            if attempt > 0:
-                print(f"Tentative {attempt + 1}/2 avec compression plus agressive...")
-                # Increase compression for retry attempts
-                crf_value = min(35, crf_value + 4)  # More aggressive jump
-                target_video_bitrate = int(target_video_bitrate * 0.7)  # Reduce bitrate by 30%
-                target_audio_bitrate = max(32, int(target_audio_bitrate * 0.7))  # Minimum 32kbps audio
-                print(f"Nouveau CRF: {crf_value}, Bitrates: {target_video_bitrate}kbps / {target_audio_bitrate}kbps")
+            print(f"🎯 Bitrate cible: {target_bitrate} bps (CRF: {params['crf']})")
             
-            # Compression command with aggressive settings
-            temp_output = output_path + f'.temp{attempt}.mp4'
+            # Fichier temporaire pour cette tentative
+            temp_output = tempfile.mktemp(suffix='_compressed.mp4')
+            
+            # Commande ffmpeg optimisée
             cmd = [
                 'ffmpeg', '-i', input_path,
-                '-c:v', 'libx264',           # H.264 codec for good compression
-                '-preset', 'ultrafast',      # Much faster encoding for Railway limits
-                '-crf', str(crf_value),      # Quality setting (higher = more compression)
-                '-b:v', f'{target_video_bitrate}k',  # Target video bitrate
-                '-maxrate', f'{int(target_video_bitrate * 1.2)}k',  # Looser max bitrate
-                '-bufsize', f'{int(target_video_bitrate * 2)}k',    # Larger buffer size
-                '-c:a', 'aac',               # AAC audio codec
-                '-b:a', f'{target_audio_bitrate}k',  # Audio bitrate
-                '-movflags', '+faststart',    # Optimize for web streaming
-                '-threads', '0',             # Use all available CPU cores
+                '-c:v', 'libx264',
+                '-preset', params['preset'],
+                '-crf', str(params['crf']),
+                '-b:v', str(target_bitrate),
+                '-maxrate', str(int(target_bitrate * 1.2)),
+                '-bufsize', str(int(target_bitrate * 2)),
+                '-c:a', 'aac',
+                '-b:a', '96k',  # Audio de meilleure qualité
+                '-threads', '0',
+                '-movflags', '+faststart',  # Optimisation pour streaming
                 '-y', temp_output
             ]
             
-            print(f"🚀 Running ffmpeg (attempt {attempt + 1}/2)...")
+            # Exécution avec timeout
+            print(f"⚙️  Compression en cours...")
+            start_time = time.time()
+            
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)  # 5 minute timeout
-            except subprocess.TimeoutExpired:
-                print(f"⚠ Compression timeout after 5 minutes (attempt {attempt + 1})")
-                # Clean up partial file
-                if os.path.exists(temp_output):
-                    os.remove(temp_output)
-                if attempt == 1:  # Last attempt
-                    return False
-                continue
-            
-            if result.returncode == 0:
-                compressed_size = get_file_size_mb(temp_output)
-                print(f"Tentative {attempt + 1}: {compressed_size:.1f}MB")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                elapsed = time.time() - start_time
                 
-                # Check if we achieved the target
-                if compressed_size <= target_size_mb:
-                    # Success! Move temp file to final output
-                    os.replace(temp_output, output_path)
-                    print(f"✓ Vidéo compressée avec succès: {compressed_size:.1f}MB (cible: {target_size_mb}MB)")
+                if result.returncode != 0:
+                    print(f"❌ Erreur ffmpeg: {result.stderr}")
+                    continue
+                
+                # Vérifier la taille du résultat
+                if os.path.exists(temp_output):
+                    compressed_size = os.path.getsize(temp_output)
+                    compressed_mb = compressed_size / (1024 * 1024)
                     
-                    return True
-                else:
-                    # Continue to next attempt if we have tries left
-                    if attempt < 1:
-                        print(f"⚠ Encore trop volumineux ({compressed_size:.1f}MB > {target_size_mb}MB), nouvelle tentative...")
-                        # Keep this temp file as input for next attempt
-                        input_path = temp_output
-                    else:
-                        # Last attempt failed, but still better than original
-                        print(f"⚠ Impossible d'atteindre {target_size_mb}MB après 2 tentatives")
-                        print(f"Meilleur résultat: {compressed_size:.1f}MB")
-                        os.replace(temp_output, output_path)
+                    print(f"📏 Résultat: {compressed_mb:.1f} MB (temps: {elapsed:.1f}s)")
+                    
+                    # Succès si on est dans la plage acceptable
+                    if compressed_mb <= target_size_mb:
+                        # Remplacer le fichier original
+                        shutil.move(temp_output, input_path)
+                        
+                        ratio = compressed_size / original_size
+                        print(f"✅ Compression réussie!")
+                        print(f"📊 Taille finale: {compressed_mb:.1f} MB")
+                        print(f"📉 Réduction: {((1-ratio)*100):.1f}%")
+                        print(f"🎯 Qualité: {params['name']}")
+                        
                         return True
-            else:
-                print(f"✗ Erreur de compression (tentative {attempt + 1}): {result.stderr}")
-                # Clean up failed temp file
-                if os.path.exists(temp_output):
-                    os.remove(temp_output)
-                
-                if attempt == 1:  # Last attempt
-                    return False
+                    else:
+                        print(f"⚠️  Encore trop gros ({compressed_mb:.1f} MB > {target_size_mb} MB)")
+                        # Nettoyer le fichier temporaire
+                        if os.path.exists(temp_output):
+                            os.unlink(temp_output)
+                else:
+                    print("❌ Fichier de sortie non créé")
+                    
+            except subprocess.TimeoutExpired:
+                print(f"⏰ Timeout après 5 minutes")
+                continue
+            except Exception as e:
+                print(f"❌ Erreur: {e}")
+                continue
         
+        # Si toutes les tentatives ont échoué
+        print(f"❌ Impossible de compresser sous {target_size_mb}MB après {len(compression_attempts)} tentatives")
         return False
-            
-    except Exception as e:
-        print(f"✗ Erreur lors de la compression: {e}")
-        return False
+        
+    finally:
+        # Nettoyer les fichiers temporaires
+        if temp_output and os.path.exists(temp_output):
+            try:
+                os.unlink(temp_output)
+            except:
+                pass
 
-def concatenate_videos(video_paths, output_path, max_size_mb=100):
-    """Concatène plusieurs vidéos avec ffmpeg et compression si nécessaire"""
+def concatenate_videos(video_paths, output_path):
+    """Concatène plusieurs vidéos avec ffmpeg"""
     
     with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
         concat_file = f.name
@@ -208,27 +201,7 @@ def concatenate_videos(video_paths, output_path, max_size_mb=100):
         result = subprocess.run(cmd, capture_output=True, text=True)
         
         if result.returncode == 0:
-            file_size = get_file_size_mb(output_path)
-            print(f"✓ Vidéo finale créée: {output_path} ({file_size:.1f}MB)")
-            
-            # Check if compression is needed
-            if file_size > max_size_mb:
-                print(f"⚠ Fichier trop volumineux ({file_size:.1f}MB > {max_size_mb}MB), compression en cours...")
-                
-                # Create compressed version
-                temp_compressed = output_path + '.compressed.mp4'
-                
-                if compress_video(output_path, temp_compressed, max_size_mb):
-                    # Replace original with compressed version
-                    os.replace(temp_compressed, output_path)
-                    final_size = get_file_size_mb(output_path)
-                    print(f"✓ Vidéo compressée avec succès: {final_size:.1f}MB")
-                else:
-                    print("⚠ Compression échouée, conservation du fichier original")
-                    # Clean up failed compression file
-                    if os.path.exists(temp_compressed):
-                        os.remove(temp_compressed)
-            
+            print(f"✓ Vidéo finale créée: {output_path}")
             return True
         else:
             print(f"✗ Erreur ffmpeg: {result.stderr}")
@@ -248,6 +221,31 @@ def check_ffmpeg():
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
+
+def check_ffmpeg_available():
+    """Vérifie si ffmpeg et ffprobe sont disponibles"""
+    try:
+        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+        subprocess.run(['ffprobe', '-version'], capture_output=True, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+def get_video_duration(video_path):
+    """Obtient la durée de la vidéo en secondes"""
+    try:
+        cmd = [
+            'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+            '-of', 'csv=p=0', video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        duration_str = result.stdout.strip()
+        
+        if duration_str:
+            return float(duration_str)
+    except (subprocess.CalledProcessError, ValueError):
+        pass
+    return None
 
 def process_videos_from_urls(urls, output_path, keep_temp=False, max_size_mb=100):
     """
@@ -286,26 +284,40 @@ def process_videos_from_urls(urls, output_path, keep_temp=False, max_size_mb=100
         if not downloaded_videos:
             return False, "Aucune vidéo n'a pu être téléchargée"
         
-        if len(downloaded_videos) < 2:
+        # Vérifie la taille finale et compresse si nécessaire
+        if len(downloaded_videos) > 1:
+            if concatenate_videos(downloaded_videos, output_path):
+                file_size = get_file_size_mb(output_path)
+                print(f"✓ Vidéo concaténée: {file_size:.1f}MB")
+                
+                # Compression si nécessaire
+                if file_size > max_size_mb:
+                    print(f"⚠ Fichier trop volumineux ({file_size:.1f}MB), compression en cours...")
+                    
+                    if compress_video(output_path, max_size_mb):
+                        file_size = get_file_size_mb(output_path)  # Update file size after compression
+                        print(f"✓ Vidéo compressée avec succès: {file_size:.1f}MB")
+                    else:
+                        print(f"⚠ Compression échouée, fichier reste à {file_size:.1f}MB")
+            else:
+                print("✗ Erreur lors de la concaténation")
+                return None, []
+        else:
+            # Un seul fichier, copie directement
             print("⚠ Une seule vidéo téléchargée, copie vers la sortie...")
             import shutil
             shutil.copy2(downloaded_videos[0], output_path)
-            
-            # Check if single video needs compression
             file_size = get_file_size_mb(output_path)
+            print(f"✓ Fichier copié: {file_size:.1f}MB")
+            
+            # Compression si nécessaire
             if file_size > max_size_mb:
                 print(f"⚠ Fichier unique trop volumineux ({file_size:.1f}MB), compression...")
-                temp_compressed = output_path + '.compressed.mp4'
-                if compress_video(output_path, temp_compressed, max_size_mb):
-                    os.replace(temp_compressed, output_path)
-                    print(f"✓ Fichier unique compressé: {get_file_size_mb(output_path):.1f}MB")
-        else:
-            # Concatène les vidéos (avec compression automatique si nécessaire)
-            if not concatenate_videos(downloaded_videos, output_path, max_size_mb):
-                return False, "Erreur lors de la concaténation"
+                if compress_video(output_path, max_size_mb):
+                    file_size = get_file_size_mb(output_path)  # Update file size after compression
+                    print(f"✓ Fichier unique compressé: {file_size:.1f}MB")
         
-        final_size = get_file_size_mb(output_path)
-        return True, f"Vidéo créée avec succès ({final_size:.1f}MB)"
+        return True, f"Vidéo créée avec succès ({file_size:.1f}MB)"
         
     finally:
         # Nettoie les fichiers temporaires

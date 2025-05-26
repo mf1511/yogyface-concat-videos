@@ -15,7 +15,7 @@ import time
 import subprocess
 
 from flask import Flask, request, jsonify, send_file, render_template_string
-from concat_videos import download_video, get_video_info, concatenate_videos, get_file_size_mb, compress_video
+from concat_videos import download_video, get_video_info, concatenate_videos, get_file_size_mb, compress_video, check_ffmpeg_available
 import shutil
 
 app = Flask(__name__)
@@ -264,44 +264,24 @@ def concatenate_videos_with_tracking(video_paths, output_path, max_size_mb, job_
                 print(f"⚠ File too large ({original_size:.1f}MB > {max_size_mb}MB), compressing...")
                 jobs[job_id]['status'] = 'compressing_video'
                 
-                # Create compressed version
-                temp_compressed = output_path + '.compressed.mp4'
-                
-                print(f"🔧 Starting compression: {output_path} -> {temp_compressed}")
+                print(f"🔧 Starting compression: {output_path}")
                 print(f"🎯 Target size: {max_size_mb}MB")
                 
-                compression_success = compress_video(output_path, temp_compressed, max_size_mb)
+                compression_success = compress_video(output_path, max_size_mb)
                 print(f"🔍 Compression result: {compression_success}")
                 
-                if compression_success and os.path.exists(temp_compressed):
-                    # Verify the compressed file is valid and smaller
-                    compressed_file_size = get_file_size_mb(temp_compressed)
-                    print(f"📏 Compressed file size: {compressed_file_size:.1f}MB")
+                if compression_success:
+                    final_size = get_file_size_mb(output_path)
+                    jobs[job_id]['was_compressed'] = True
                     
-                    if compressed_file_size > 0:  # Valid file
-                        # Replace original with compressed version
-                        os.replace(temp_compressed, output_path)
-                        final_size = get_file_size_mb(output_path)
-                        jobs[job_id]['was_compressed'] = True
-                        
-                        # Add compression ratio information
-                        compression_ratio = ((original_size - final_size) / original_size) * 100
-                        jobs[job_id]['compression_ratio'] = round(compression_ratio, 1)
-                        
-                        print(f"✓ Video compressed successfully: {final_size:.1f}MB ({compression_ratio:.1f}% reduction)")
-                    else:
-                        print("⚠ Compressed file is invalid (0 bytes), keeping original")
-                        jobs[job_id]['compression_ratio'] = 0
-                        if os.path.exists(temp_compressed):
-                            os.remove(temp_compressed)
+                    # Add compression ratio information
+                    compression_ratio = ((original_size - final_size) / original_size) * 100
+                    jobs[job_id]['compression_ratio'] = round(compression_ratio, 1)
+                    
+                    print(f"✓ Video compressed successfully: {final_size:.1f}MB ({compression_ratio:.1f}% reduction)")
                 else:
-                    print("⚠ Compression failed or temp file missing, keeping original")
-                    print(f"   compress_video returned: {compression_success}")
-                    print(f"   temp file exists: {os.path.exists(temp_compressed) if 'temp_compressed' in locals() else 'N/A'}")
+                    print("⚠ Compression failed, keeping original")
                     jobs[job_id]['compression_ratio'] = 0
-                    # Clean up failed compression file
-                    if os.path.exists(temp_compressed):
-                        os.remove(temp_compressed)
             else:
                 print(f"ℹ️ File size OK ({original_size:.1f}MB <= {max_size_mb}MB), no compression needed")
             
