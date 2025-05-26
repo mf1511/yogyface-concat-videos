@@ -425,7 +425,37 @@ def download_video_file(job_id):
 @app.route('/health')
 def health_check():
     """Health check endpoint"""
-    return jsonify({'status': 'healthy'})
+    try:
+        # Check if compression function is available
+        from concat_videos import compress_video
+        compression_available = True
+    except ImportError:
+        compression_available = False
+    
+    return jsonify({
+        'status': 'healthy',
+        'compression_available': compression_available,
+        'timestamp': '2025-05-26T19:20:00Z',
+        'version': 'v2.1-with-compression'
+    })
+
+@app.route('/api/version')
+def version_check():
+    """Version check endpoint to verify deployment"""
+    try:
+        from concat_videos import compress_video
+        return jsonify({
+            'version': 'v2.1-with-compression',
+            'compression_available': True,
+            'timestamp': '2025-05-26T19:20:00Z',
+            'git_commit': '30482d8'
+        })
+    except ImportError:
+        return jsonify({
+            'version': 'v1.0-no-compression', 
+            'compression_available': False,
+            'error': 'Compression module not found'
+        })
 
 # Cleanup old jobs periodically
 def cleanup_old_jobs():
