@@ -1,24 +1,8 @@
 [variables]
-PYTHONPATH = "/app"
+PORT = "5000"
 
 [phases.setup]
-nixPkgs = ["python3", "python3Packages.pip", "ffmpeg", "pkg-config"]
-
-[phases.install]
-cmds = [
-    "python3 -m pip install --upgrade pip",
-    "python3 -m pip install -r requirements.txt"
-]
-
-[phases.build]
-cmds = [
-    "echo 'Checking Python installation...'",
-    "python3 --version",
-    "echo 'Checking ffmpeg installation...'", 
-    "ffmpeg -version",
-    "echo 'Checking installed packages...'",
-    "python3 -m pip list"
-]
+nixPkgs = ["ffmpeg"]
 
 [start]
-cmd = "python3 web_app.py" 
+cmd = "python web_app.py" 
