@@ -23,6 +23,10 @@ jobs = {}
 UPLOAD_FOLDER = '/tmp/videos'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+def get_base_url(request):
+    """Get the base URL for building download links"""
+    return f"{request.scheme}://{request.headers.get('Host', 'localhost:5000')}"
+
 # Simple HTML template for the web interface
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -125,7 +129,8 @@ HTML_TEMPLATE = """
                 if (status.status === 'completed') {
                     document.getElementById('downloadLink').innerHTML = 
                         `<div class="success">✅ Video concatenated successfully!</div>
-                         <a href="/api/download/${jobId}" download><button>📥 Download Video</button></a>`;
+                         <p><strong>Download URL:</strong> <a href="${status.download_url}" target="_blank">${status.download_url}</a></p>
+                         <a href="${status.download_url}" download><button>📥 Download Video</button></a>`;
                 } else if (status.status === 'failed') {
                     document.getElementById('statusMessage').innerHTML = `<div class="error">❌ Error: ${status.error}</div>`;
                 } else {
@@ -187,6 +192,7 @@ def process_concatenation(job_id, urls, output_name):
         if concatenate_videos(downloaded_videos, output_path):
             jobs[job_id]['status'] = 'completed'
             jobs[job_id]['output_file'] = output_path
+            jobs[job_id]['output_filename'] = output_name
         else:
             jobs[job_id]['status'] = 'failed'
             jobs[job_id]['error'] = 'Failed to concatenate videos'
@@ -210,6 +216,7 @@ def concatenate_api():
         data = request.get_json()
         urls = data.get('urls', [])
         output_name = data.get('output_name', 'concatenated_video.mp4')
+        sync = data.get('sync', False)  # Option for synchronous processing
         
         if len(urls) < 2:
             return jsonify({'error': 'At least 2 URLs required'}), 400
@@ -221,31 +228,66 @@ def concatenate_api():
             'created_at': time.time()
         }
         
-        # Start background processing
-        thread = threading.Thread(target=process_concatenation, args=(job_id, urls, output_name))
-        thread.start()
+        base_url = get_base_url(request)
         
-        return jsonify({'job_id': job_id, 'status': 'queued'})
+        if sync:
+            # Process synchronously and return download URL immediately
+            process_concatenation(job_id, urls, output_name)
+            job = jobs[job_id]
+            
+            if job['status'] == 'completed':
+                download_url = f"{base_url}/api/download/{job_id}"
+                return jsonify({
+                    'status': 'completed',
+                    'job_id': job_id,
+                    'download_url': download_url,
+                    'filename': output_name
+                })
+            else:
+                return jsonify({
+                    'status': 'failed',
+                    'job_id': job_id,
+                    'error': job.get('error', 'Unknown error')
+                }), 500
+        else:
+            # Start background processing
+            thread = threading.Thread(target=process_concatenation, args=(job_id, urls, output_name))
+            thread.start()
+            
+            return jsonify({
+                'job_id': job_id, 
+                'status': 'queued',
+                'status_url': f"{base_url}/api/status/{job_id}"
+            })
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/status/<job_id>')
 def get_status(job_id):
-    """Get job status"""
+    """Get job status with download URL when completed"""
     if job_id not in jobs:
         return jsonify({'error': 'Job not found'}), 404
     
     job = jobs[job_id]
-    response = {'status': job['status']}
+    base_url = get_base_url(request)
+    
+    response = {
+        'status': job['status'],
+        'job_id': job_id
+    }
     
     if 'error' in job:
         response['error'] = job['error']
     
+    if job['status'] == 'completed':
+        response['download_url'] = f"{base_url}/api/download/{job_id}"
+        response['filename'] = job.get('output_filename', 'concatenated_video.mp4')
+    
     return jsonify(response)
 
 @app.route('/api/download/<job_id>')
-def download_video(job_id):
+def download_video_file(job_id):
     """Download completed video"""
     if job_id not in jobs:
         return jsonify({'error': 'Job not found'}), 404
@@ -257,7 +299,8 @@ def download_video(job_id):
     if 'output_file' not in job or not os.path.exists(job['output_file']):
         return jsonify({'error': 'Output file not found'}), 404
     
-    return send_file(job['output_file'], as_attachment=True)
+    filename = job.get('output_filename', 'concatenated_video.mp4')
+    return send_file(job['output_file'], as_attachment=True, download_name=filename)
 
 @app.route('/health')
 def health_check():

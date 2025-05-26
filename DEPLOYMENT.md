@@ -7,9 +7,9 @@ This guide explains how to deploy your video concatenation tool as a web service
 ## What Gets Deployed
 
 - **Web Interface**: Simple HTML form to input video URLs
-- **REST API**: Endpoints for programmatic access
+- **REST API**: Endpoints for programmatic access with downloadable URLs
 - **Background Processing**: Async video processing with status tracking
-- **File Downloads**: Direct download of concatenated videos
+- **Direct Downloads**: Download URLs included in API responses
 
 ## Pre-deployment Setup
 
@@ -45,10 +45,10 @@ Visit http://localhost:5000 to test the interface.
 
 Railway will automatically:
 
-- Detect Python project
+- Detect Python project via Dockerfile
 - Install dependencies from `requirements.txt`
-- Install ffmpeg via `nixpacks.toml`
-- Use `Procfile` to start the web server
+- Install ffmpeg system dependency
+- Use `Dockerfile` for containerized deployment
 
 ### 4. Custom Domain (Optional)
 
@@ -66,12 +66,14 @@ Once deployed, your service will have these endpoints:
 
 ### API Endpoints
 
-- `POST /api/concatenate` - Start video concatenation
-- `GET /api/status/<job_id>` - Check job status
-- `GET /api/download/<job_id>` - Download completed video
+- `POST /api/concatenate` - Start video concatenation (returns download URL when completed)
+- `GET /api/status/<job_id>` - Check job status (includes download URL when ready)
+- `GET /api/download/<job_id>` - Download completed video file
 - `GET /health` - Health check
 
-### API Usage Example
+### API Usage Examples
+
+#### Asynchronous Processing (Default)
 
 ```bash
 # Start concatenation
@@ -79,19 +81,55 @@ curl -X POST https://your-app.railway.app/api/concatenate \
   -H "Content-Type: application/json" \
   -d '{"urls": ["https://example.com/video1.mp4", "https://example.com/video2.mp4"], "output_name": "result.mp4"}'
 
-# Check status
-curl https://your-app.railway.app/api/status/<job_id>
+# Response includes status URL
+{
+  "job_id": "uuid-here",
+  "status": "queued",
+  "status_url": "https://your-app.railway.app/api/status/uuid-here"
+}
 
-# Download result
-curl -O https://your-app.railway.app/api/download/<job_id>
+# Check status (includes download URL when completed)
+curl https://your-app.railway.app/api/status/uuid-here
+
+# Response when completed
+{
+  "status": "completed",
+  "job_id": "uuid-here",
+  "download_url": "https://your-app.railway.app/api/download/uuid-here",
+  "filename": "result.mp4"
+}
+```
+
+#### Synchronous Processing
+
+```bash
+# Process synchronously and get download URL immediately
+curl -X POST https://your-app.railway.app/api/concatenate \
+  -H "Content-Type: application/json" \
+  -d '{"urls": ["https://example.com/video1.mp4", "https://example.com/video2.mp4"], "sync": true}'
+
+# Response includes download URL immediately
+{
+  "status": "completed",
+  "job_id": "uuid-here",
+  "download_url": "https://your-app.railway.app/api/download/uuid-here",
+  "filename": "concatenated_video.mp4"
+}
 ```
 
 ## Important Notes
 
+### API Response Format
+
+- **Async mode**: Returns job_id and status_url for polling
+- **Sync mode**: Returns download_url immediately after processing
+- **Status endpoint**: Always includes download_url when job is completed
+- **Download URLs**: Full URLs ready for direct download or sharing
+
 ### File Storage
 
 - Videos are stored temporarily (1 hour max)
-- Downloads are available immediately after processing
+- Download URLs are valid immediately after processing
 - Large files may take time to process
 
 ### Limitations
@@ -99,6 +137,7 @@ curl -O https://your-app.railway.app/api/download/<job_id>
 - Maximum file size depends on Railway limits
 - Processing time varies with video size
 - Concurrent job limit: depends on Railway plan
+- Sync mode may timeout for large videos
 
 ### Monitoring
 
@@ -110,19 +149,10 @@ curl -O https://your-app.railway.app/api/download/<job_id>
 
 ### Common Issues
 
-1. **ffmpeg not found**
-
-   - Check `nixpacks.toml` configuration
-   - Verify deployment logs
-
-2. **Out of memory**
-
-   - Upgrade Railway plan
-   - Optimize video processing
-
-3. **Timeout errors**
-   - Large videos may need more time
-   - Consider splitting into smaller chunks
+1. **Build fails**: Check Dockerfile and requirements.txt
+2. **ffmpeg not found**: Verify Dockerfile includes ffmpeg installation
+3. **App won't start**: Check Railway logs for Python errors
+4. **Download URLs not working**: Check base URL construction
 
 ### Logs
 
@@ -135,6 +165,6 @@ Check Railway deployment logs:
 ## Cost Optimization
 
 - Use Railway's sleep mode for development
-- Monitor bandwidth usage
+- Monitor bandwidth usage (downloads count toward limits)
 - Implement file cleanup policies
 - Consider caching for repeated requests
