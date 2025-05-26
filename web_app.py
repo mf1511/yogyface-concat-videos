@@ -11,9 +11,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 import threading
 import time
+import subprocess
 
 from flask import Flask, request, jsonify, send_file, render_template_string
-from concat_videos import download_video, get_video_info, concatenate_videos, get_file_size_mb
+from concat_videos import download_video, get_video_info, concatenate_videos, get_file_size_mb, compress_video
 import shutil
 
 app = Flask(__name__)
@@ -208,19 +209,14 @@ def process_concatenation(job_id, urls, output_name, max_size_mb=100):
         jobs[job_id]['status'] = 'concatenating_videos'
         output_path = os.path.join(UPLOAD_FOLDER, f"{job_id}_{output_name}")
         
-        # Store original size before potential compression
-        initial_size = None
-        
-        if concatenate_videos(downloaded_videos, output_path, max_size_mb):
+        # Use a modified concatenate function that tracks compression
+        if concatenate_videos_with_tracking(downloaded_videos, output_path, max_size_mb, job_id):
             final_size = get_file_size_mb(output_path)
             jobs[job_id]['status'] = 'completed'
             jobs[job_id]['output_file'] = output_path
             jobs[job_id]['output_filename'] = output_name
             jobs[job_id]['file_size'] = round(final_size, 1)
-            
-            # Check if compression occurred by comparing expected vs actual size
-            # (This is a simple heuristic - in production you might want to track this more explicitly)
-            jobs[job_id]['was_compressed'] = final_size <= max_size_mb and final_size < max_size_mb * 0.8
+            # was_compressed is set by concatenate_videos_with_tracking
         else:
             jobs[job_id]['status'] = 'failed'
             jobs[job_id]['error'] = 'Failed to concatenate videos'
@@ -231,6 +227,65 @@ def process_concatenation(job_id, urls, output_name, max_size_mb=100):
     except Exception as e:
         jobs[job_id]['status'] = 'failed'
         jobs[job_id]['error'] = str(e)
+
+def concatenate_videos_with_tracking(video_paths, output_path, max_size_mb, job_id):
+    """Concatenate videos with compression tracking"""
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        concat_file = f.name
+        for video_path in video_paths:
+            # Escape special characters for ffmpeg
+            escaped_path = video_path.replace("'", "'\\''")
+            f.write(f"file '{escaped_path}'\n")
+    
+    try:
+        print("Concatenating videos...")
+        cmd = [
+            'ffmpeg', '-f', 'concat', '-safe', '0', '-i', concat_file,
+            '-c', 'copy', '-y', output_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            original_size = get_file_size_mb(output_path)
+            print(f"✓ Video created: {output_path} ({original_size:.1f}MB)")
+            
+            # Store original size before compression
+            jobs[job_id]['original_size'] = round(original_size, 1)
+            jobs[job_id]['was_compressed'] = False
+            
+            # Check if compression is needed
+            if original_size > max_size_mb:
+                print(f"⚠ File too large ({original_size:.1f}MB > {max_size_mb}MB), compressing...")
+                jobs[job_id]['status'] = 'compressing_video'
+                
+                # Create compressed version
+                temp_compressed = output_path + '.compressed.mp4'
+                
+                if compress_video(output_path, temp_compressed, max_size_mb):
+                    # Replace original with compressed version
+                    os.replace(temp_compressed, output_path)
+                    final_size = get_file_size_mb(output_path)
+                    jobs[job_id]['was_compressed'] = True
+                    print(f"✓ Video compressed successfully: {final_size:.1f}MB")
+                else:
+                    print("⚠ Compression failed, keeping original")
+                    # Clean up failed compression file
+                    if os.path.exists(temp_compressed):
+                        os.remove(temp_compressed)
+            
+            return True
+        else:
+            print(f"✗ FFmpeg error: {result.stderr}")
+            return False
+            
+    except Exception as e:
+        print(f"✗ Error during concatenation: {e}")
+        return False
+    finally:
+        # Clean up temporary file
+        os.unlink(concat_file)
 
 @app.route('/')
 def index():
@@ -275,6 +330,7 @@ def concatenate_api():
                     'download_url': download_url,
                     'filename': output_name,
                     'file_size': job.get('file_size'),
+                    'original_size': job.get('original_size'),
                     'was_compressed': job.get('was_compressed', False)
                 })
             else:
@@ -333,6 +389,7 @@ def get_status(job_id):
         response['download_url'] = f"{base_url}/api/download/{job_id}"
         response['filename'] = job.get('output_filename', 'concatenated_video.mp4')
         response['file_size'] = job.get('file_size')
+        response['original_size'] = job.get('original_size')
         response['was_compressed'] = job.get('was_compressed', False)
     
     return jsonify(response)
