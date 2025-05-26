@@ -1,15 +1,26 @@
-# Video Concatenation Tool
+# Video Concatenation Tool 🎬
 
-A Python script and web service to download and concatenate videos from URLs.
+Télécharge et concatène des vidéos depuis des URLs avec compression automatique.
 
-## Features
+## Fonctionnalités
 
-- **CLI Tool**: Command-line interface for local use
-- **Web Interface**: Simple HTML form for easy video concatenation
-- **REST API**: Programmatic access for integration
-- **Background Processing**: Async video processing with status tracking
-- **Auto Cleanup**: Temporary files are automatically cleaned up
-- **Multiple Formats**: Support for .mp4, .avi, .mkv, .mov, .wmv
+- ✅ Téléchargement de vidéos depuis des URLs
+- ✅ Concaténation de plusieurs vidéos
+- ✅ **Compression automatique** pour les fichiers > 100MB
+- ✅ Interface web moderne
+- ✅ API REST avec URLs de téléchargement
+- ✅ Traitement asynchrone avec suivi de statut
+- ✅ Déploiement Railway ready
+
+## Nouvelle fonctionnalité: Compression intelligente
+
+Le système compresse automatiquement les vidéos qui dépassent la taille limite spécifiée:
+
+- **Calcul intelligent du bitrate** basé sur la durée de la vidéo
+- **Codec H.264 optimisé** pour la livraison web
+- **Seuils de qualité minimale** garantis (500kbps vidéo, 64kbps audio)
+- **Taille personnalisable** de 10MB à 500MB
+- **Statut en temps réel** pendant la compression
 
 ## Prerequisites
 
@@ -41,11 +52,14 @@ pip install -r requirements.txt
 ### CLI Tool (Local)
 
 ```bash
-# Basic usage
+# Basic usage (with 100MB compression limit)
 python concat-videos.py https://example.com/video1.mp4 https://example.com/video2.mp4
 
-# Specify output filename
-python concat-videos.py -o my_output.mp4 https://example.com/video1.mp4 https://example.com/video2.mp4
+# Specify output filename and custom compression limit
+python concat-videos.py -o my_output.mp4 --max-size 50 https://example.com/video1.mp4 https://example.com/video2.mp4
+
+# No compression (500MB limit)
+python concat-videos.py --max-size 500 https://example.com/video1.mp4 https://example.com/video2.mp4
 
 # Keep temporary files
 python concat-videos.py --keep-temp https://example.com/video1.mp4 https://example.com/video2.mp4
@@ -100,18 +114,37 @@ This project is ready for deployment on Railway! See [DEPLOYMENT.md](DEPLOYMENT.
 ### API Example
 
 ```bash
-# Start concatenation
+# Start concatenation with automatic compression
 curl -X POST https://your-app.railway.app/api/concatenate \
   -H "Content-Type: application/json" \
-  -d '{"urls": ["https://example.com/video1.mp4", "https://example.com/video2.mp4"]}'
+  -d '{
+    "urls": ["https://example.com/video1.mp4", "https://example.com/video2.mp4"],
+    "max_size_mb": 100
+  }'
 
-# Response: {"job_id": "uuid-here", "status": "queued"}
+# Response: {"job_id": "uuid-here", "status": "queued", "max_size_mb": 100}
 
-# Check status
+# Check status (includes compression info)
 curl https://your-app.railway.app/api/status/uuid-here
 
-# Download when completed
-curl -O https://your-app.railway.app/api/download/uuid-here
+# Response when completed:
+{
+  "status": "Processing completed successfully",
+  "job_id": "uuid-here",
+  "download_url": "https://your-app.railway.app/api/download/uuid-here",
+  "filename": "concatenated_video.mp4",
+  "file_size": 85.2,
+  "was_compressed": true
+}
+
+# Synchronous processing with compression
+curl -X POST https://your-app.railway.app/api/concatenate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "urls": ["https://example.com/video1.mp4", "https://example.com/video2.mp4"],
+    "sync": true,
+    "max_size_mb": 75
+  }'
 ```
 
 ## CLI Arguments
@@ -119,6 +152,7 @@ curl -O https://your-app.railway.app/api/download/uuid-here
 - `urls`: One or more URLs of videos to download and concatenate
 - `-o, --output`: Output filename (default: video_finale.mp4)
 - `--keep-temp`: Keep temporary downloaded files (default: false)
+- `--max-size`: Maximum file size in MB before compression (default: 100, range: 10-500)
 
 ## File Structure
 
