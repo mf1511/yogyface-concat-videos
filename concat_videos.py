@@ -53,6 +53,7 @@ def get_file_size_mb(file_path):
 def compress_video(input_path, output_path, target_size_mb=100):
     """
     Compresse une vidéo pour qu'elle fasse moins de target_size_mb MB
+    Uses iterative compression to ensure target is met
     """
     try:
         print(f"Compression de la vidéo (cible: {target_size_mb}MB)...")
@@ -65,41 +66,89 @@ def compress_video(input_path, output_path, target_size_mb=100):
         duration_result = subprocess.run(duration_cmd, capture_output=True, text=True, check=True)
         duration = float(duration_result.stdout.strip())
         
-        # Calculate target bitrate (in kbps) for target file size
-        # Formula: (target_size_mb * 8 * 1024) / duration_seconds * 0.9 (90% for video, 10% for audio)
-        target_video_bitrate = int((target_size_mb * 8 * 1024) / duration * 0.9)
-        target_audio_bitrate = min(128, int((target_size_mb * 8 * 1024) / duration * 0.1))
+        # More aggressive initial calculation (85% of target to ensure we stay under)
+        target_size_mb_adjusted = target_size_mb * 0.85
         
-        # Ensure minimum quality
-        target_video_bitrate = max(target_video_bitrate, 500)  # Minimum 500kbps
-        target_audio_bitrate = max(target_audio_bitrate, 64)   # Minimum 64kbps
+        # Calculate target bitrate (in kbps) for adjusted target file size
+        target_video_bitrate = int((target_size_mb_adjusted * 8 * 1024) / duration * 0.85)
+        target_audio_bitrate = min(96, int((target_size_mb_adjusted * 8 * 1024) / duration * 0.15))
+        
+        # Ensure minimum quality but be more aggressive
+        target_video_bitrate = max(target_video_bitrate, 300)  # Lower minimum for aggressive compression
+        target_audio_bitrate = max(target_audio_bitrate, 48)   # Lower audio quality if needed
         
         print(f"Bitrates calculés - Vidéo: {target_video_bitrate}kbps, Audio: {target_audio_bitrate}kbps")
         
-        # Compression command with optimized settings
-        cmd = [
-            'ffmpeg', '-i', input_path,
-            '-c:v', 'libx264',           # H.264 codec for good compression
-            '-preset', 'medium',          # Balance between speed and compression
-            '-crf', '23',                # Quality setting (lower = better quality, larger file)
-            '-b:v', f'{target_video_bitrate}k',  # Target video bitrate
-            '-maxrate', f'{int(target_video_bitrate * 1.2)}k',  # Max bitrate
-            '-bufsize', f'{int(target_video_bitrate * 2)}k',    # Buffer size
-            '-c:a', 'aac',               # AAC audio codec
-            '-b:a', f'{target_audio_bitrate}k',  # Audio bitrate
-            '-movflags', '+faststart',    # Optimize for web streaming
-            '-y', output_path
-        ]
+        # More aggressive compression settings
+        crf_value = 28  # Higher CRF = more compression (was 23)
         
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        # Try up to 3 compression attempts with increasing aggressiveness
+        for attempt in range(3):
+            if attempt > 0:
+                print(f"Tentative {attempt + 1}/3 avec compression plus agressive...")
+                # Increase compression for retry attempts
+                crf_value = min(32, crf_value + 3)  # Cap at CRF 32
+                target_video_bitrate = int(target_video_bitrate * 0.8)  # Reduce bitrate by 20%
+                target_audio_bitrate = max(32, int(target_audio_bitrate * 0.8))  # Minimum 32kbps audio
+                print(f"Nouveau CRF: {crf_value}, Bitrates: {target_video_bitrate}kbps / {target_audio_bitrate}kbps")
+            
+            # Compression command with aggressive settings
+            temp_output = output_path + f'.temp{attempt}.mp4'
+            cmd = [
+                'ffmpeg', '-i', input_path,
+                '-c:v', 'libx264',           # H.264 codec for good compression
+                '-preset', 'medium',          # Balance between speed and compression
+                '-crf', str(crf_value),      # Quality setting (higher = more compression)
+                '-b:v', f'{target_video_bitrate}k',  # Target video bitrate
+                '-maxrate', f'{int(target_video_bitrate * 1.1)}k',  # Tighter max bitrate
+                '-bufsize', f'{target_video_bitrate}k',    # Smaller buffer size
+                '-c:a', 'aac',               # AAC audio codec
+                '-b:a', f'{target_audio_bitrate}k',  # Audio bitrate
+                '-movflags', '+faststart',    # Optimize for web streaming
+                '-y', temp_output
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                compressed_size = get_file_size_mb(temp_output)
+                print(f"Tentative {attempt + 1}: {compressed_size:.1f}MB")
+                
+                # Check if we achieved the target
+                if compressed_size <= target_size_mb:
+                    # Success! Move temp file to final output
+                    os.replace(temp_output, output_path)
+                    print(f"✓ Vidéo compressée avec succès: {compressed_size:.1f}MB (cible: {target_size_mb}MB)")
+                    
+                    # Clean up any other temp files
+                    for i in range(attempt + 1, 3):
+                        temp_file = output_path + f'.temp{i}.mp4'
+                        if os.path.exists(temp_file):
+                            os.remove(temp_file)
+                    
+                    return True
+                else:
+                    # Continue to next attempt if we have tries left
+                    if attempt < 2:
+                        print(f"⚠ Encore trop volumineux ({compressed_size:.1f}MB > {target_size_mb}MB), nouvelle tentative...")
+                        # Keep this temp file as input for next attempt
+                        input_path = temp_output
+                    else:
+                        # Last attempt failed, but still better than original
+                        print(f"⚠ Impossible d'atteindre {target_size_mb}MB après 3 tentatives")
+                        print(f"Meilleur résultat: {compressed_size:.1f}MB")
+                        os.replace(temp_output, output_path)
+                        return True
+            else:
+                print(f"✗ Erreur de compression (tentative {attempt + 1}): {result.stderr}")
+                # Clean up failed temp file
+                if os.path.exists(temp_output):
+                    os.remove(temp_output)
+                
+                if attempt == 2:  # Last attempt
+                    return False
         
-        if result.returncode == 0:
-            compressed_size = get_file_size_mb(output_path)
-            print(f"✓ Vidéo compressée: {compressed_size:.1f}MB")
-            return True
-        else:
-            print(f"✗ Erreur de compression: {result.stderr}")
-            return False
+        return False
             
     except Exception as e:
         print(f"✗ Erreur lors de la compression: {e}")

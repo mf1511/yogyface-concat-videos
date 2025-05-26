@@ -145,7 +145,10 @@ HTML_TEMPLATE = """
                 
                 if (status.status === 'completed') {
                     let sizeInfo = status.file_size ? ` (${status.file_size}MB)` : '';
-                    let compressionInfo = status.was_compressed ? ' ✨ Video was automatically compressed to reduce file size!' : '';
+                    let compressionInfo = status.was_compressed ? 
+                        ` ✨ Video was automatically compressed to reduce file size!` +
+                        (status.original_size ? ` Original: ${status.original_size}MB` : '') +
+                        (status.compression_ratio ? ` (${status.compression_ratio}% reduction)` : '') : '';
                     
                     document.getElementById('downloadLink').innerHTML = 
                         `<div class="success">✅ Video concatenated successfully!${sizeInfo}${compressionInfo}</div>
@@ -268,9 +271,15 @@ def concatenate_videos_with_tracking(video_paths, output_path, max_size_mb, job_
                     os.replace(temp_compressed, output_path)
                     final_size = get_file_size_mb(output_path)
                     jobs[job_id]['was_compressed'] = True
-                    print(f"✓ Video compressed successfully: {final_size:.1f}MB")
+                    
+                    # Add compression ratio information
+                    compression_ratio = ((original_size - final_size) / original_size) * 100
+                    jobs[job_id]['compression_ratio'] = round(compression_ratio, 1)
+                    
+                    print(f"✓ Video compressed successfully: {final_size:.1f}MB ({compression_ratio:.1f}% reduction)")
                 else:
                     print("⚠ Compression failed, keeping original")
+                    jobs[job_id]['compression_ratio'] = 0
                     # Clean up failed compression file
                     if os.path.exists(temp_compressed):
                         os.remove(temp_compressed)
@@ -331,7 +340,8 @@ def concatenate_api():
                     'filename': output_name,
                     'file_size': job.get('file_size'),
                     'original_size': job.get('original_size'),
-                    'was_compressed': job.get('was_compressed', False)
+                    'was_compressed': job.get('was_compressed', False),
+                    'compression_ratio': job.get('compression_ratio', 0)
                 })
             else:
                 return jsonify({
@@ -391,6 +401,7 @@ def get_status(job_id):
         response['file_size'] = job.get('file_size')
         response['original_size'] = job.get('original_size')
         response['was_compressed'] = job.get('was_compressed', False)
+        response['compression_ratio'] = job.get('compression_ratio', 0)
     
     return jsonify(response)
 
