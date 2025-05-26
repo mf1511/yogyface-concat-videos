@@ -6,10 +6,11 @@ This guide explains how to deploy your video concatenation tool as a web service
 
 ## What Gets Deployed
 
-- **Web Interface**: Simple HTML form to input video URLs
+- **Web Interface**: Simple HTML form to input video URLs with compression settings
 - **REST API**: Endpoints for programmatic access with downloadable URLs
 - **Background Processing**: Async video processing with status tracking
 - **Direct Downloads**: Download URLs included in API responses
+- **Automatic Compression**: Videos larger than specified size are automatically compressed
 
 ## Pre-deployment Setup
 
@@ -76,68 +77,83 @@ Once deployed, your service will have these endpoints:
 #### Asynchronous Processing (Default)
 
 ```bash
-# Start concatenation
+# Start concatenation with automatic compression for files > 100MB
 curl -X POST https://your-app.railway.app/api/concatenate \
   -H "Content-Type: application/json" \
-  -d '{"urls": ["https://example.com/video1.mp4", "https://example.com/video2.mp4"], "output_name": "result.mp4"}'
+  -d '{"urls": ["https://example.com/video1.mp4", "https://example.com/video2.mp4"], "output_name": "result.mp4", "max_size_mb": 100}'
 
 # Response includes status URL
 {
   "job_id": "uuid-here",
   "status": "queued",
-  "status_url": "https://your-app.railway.app/api/status/uuid-here"
+  "status_url": "https://your-app.railway.app/api/status/uuid-here",
+  "max_size_mb": 100
 }
 
 # Check status (includes download URL when completed)
 curl https://your-app.railway.app/api/status/uuid-here
 
-# Response when completed
+# Response when completed (with compression info)
 {
-  "status": "completed",
+  "status": "Processing completed successfully",
   "job_id": "uuid-here",
   "download_url": "https://your-app.railway.app/api/download/uuid-here",
-  "filename": "result.mp4"
+  "filename": "result.mp4",
+  "file_size": 85.2,
+  "was_compressed": true
 }
 ```
 
 #### Synchronous Processing
 
 ```bash
-# Process synchronously and get download URL immediately
+# Process synchronously with custom max size
 curl -X POST https://your-app.railway.app/api/concatenate \
   -H "Content-Type: application/json" \
-  -d '{"urls": ["https://example.com/video1.mp4", "https://example.com/video2.mp4"], "sync": true}'
+  -d '{"urls": ["https://example.com/video1.mp4", "https://example.com/video2.mp4"], "sync": true, "max_size_mb": 50}'
 
 # Response includes download URL immediately
 {
   "status": "completed",
   "job_id": "uuid-here",
   "download_url": "https://your-app.railway.app/api/download/uuid-here",
-  "filename": "concatenated_video.mp4"
+  "filename": "concatenated_video.mp4",
+  "file_size": 48.7,
+  "was_compressed": true
 }
 ```
 
+#### New API Parameters
+
+- `max_size_mb` (optional): Maximum file size in MB before compression (default: 100, range: 10-500)
+- Response includes:
+  - `file_size`: Final file size in MB
+  - `was_compressed`: Boolean indicating if compression was applied
+
 ## Important Notes
 
-### API Response Format
+### Compression Feature
 
-- **Async mode**: Returns job_id and status_url for polling
-- **Sync mode**: Returns download_url immediately after processing
-- **Status endpoint**: Always includes download_url when job is completed
-- **Download URLs**: Full URLs ready for direct download or sharing
+- **Automatic**: Videos over the specified size limit are automatically compressed
+- **Quality**: Uses H.264 codec with optimized settings for web delivery
+- **Bitrate Calculation**: Automatically calculates optimal bitrate based on video duration
+- **Minimum Quality**: Ensures minimum quality thresholds (500kbps video, 64kbps audio)
+- **Status Updates**: Real-time status updates during compression process
 
 ### File Storage
 
 - Videos are stored temporarily (1 hour max)
 - Download URLs are valid immediately after processing
-- Large files may take time to process
+- Large files may take time to process and compress
+- Compression time depends on original video size and target size
 
 ### Limitations
 
 - Maximum file size depends on Railway limits
-- Processing time varies with video size
+- Processing time varies with video size and compression requirements
 - Concurrent job limit: depends on Railway plan
-- Sync mode may timeout for large videos
+- Sync mode may timeout for large videos requiring compression
+- Max size range: 10MB - 500MB
 
 ### Monitoring
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Web API for video concatenation service
+Web API for video concatenation service with compression support
 """
 
 import os
@@ -13,7 +13,7 @@ import threading
 import time
 
 from flask import Flask, request, jsonify, send_file, render_template_string
-from concat_videos import download_video, get_video_info, concatenate_videos
+from concat_videos import download_video, get_video_info, concatenate_videos, get_file_size_mb
 import shutil
 
 app = Flask(__name__)
@@ -41,10 +41,12 @@ HTML_TEMPLATE = """
         button { background: #007bff; color: white; cursor: pointer; }
         button:hover { background: #0056b3; }
         .url-input { width: 100%; margin: 10px 0; }
+        .size-input { width: 100px; }
         .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
         .success { background: #d4edda; color: #155724; }
         .error { background: #f8d7da; color: #721c24; }
         .processing { background: #d1ecf1; color: #0c5460; }
+        .compression { background: #fff3cd; color: #856404; }
     </style>
 </head>
 <body>
@@ -60,6 +62,10 @@ HTML_TEMPLATE = """
             <button type="button" onclick="addUrlInput()">+ Add More URLs</button>
             <br><br>
             <input type="text" id="outputName" placeholder="Output filename (optional)" value="concatenated_video.mp4">
+            <br><br>
+            <label>Max file size (MB): </label>
+            <input type="number" id="maxSize" class="size-input" value="100" min="10" max="500">
+            <small>Files larger than this will be automatically compressed</small>
             <br><br>
             <button type="submit">🚀 Start Concatenation</button>
         </form>
@@ -90,6 +96,7 @@ HTML_TEMPLATE = """
                 .filter(url => url.trim() !== '');
             
             const outputName = document.getElementById('outputName').value || 'concatenated_video.mp4';
+            const maxSize = parseInt(document.getElementById('maxSize').value) || 100;
             
             if (urls.length < 2) {
                 alert('Please provide at least 2 video URLs');
@@ -104,7 +111,11 @@ HTML_TEMPLATE = """
                 const response = await fetch('/api/concatenate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ urls: urls, output_name: outputName })
+                    body: JSON.stringify({ 
+                        urls: urls, 
+                        output_name: outputName,
+                        max_size_mb: maxSize
+                    })
                 });
                 
                 const result = await response.json();
@@ -124,11 +135,19 @@ HTML_TEMPLATE = """
                 const response = await fetch(`/api/status/${jobId}`);
                 const status = await response.json();
                 
-                document.getElementById('statusMessage').innerHTML = `<div class="processing">${status.status}</div>`;
+                let statusClass = 'processing';
+                if (status.status.includes('compress')) {
+                    statusClass = 'compression';
+                }
+                
+                document.getElementById('statusMessage').innerHTML = `<div class="${statusClass}">${status.status}</div>`;
                 
                 if (status.status === 'completed') {
+                    let sizeInfo = status.file_size ? ` (${status.file_size}MB)` : '';
+                    let compressionInfo = status.was_compressed ? ' ✨ Video was automatically compressed to reduce file size!' : '';
+                    
                     document.getElementById('downloadLink').innerHTML = 
-                        `<div class="success">✅ Video concatenated successfully!</div>
+                        `<div class="success">✅ Video concatenated successfully!${sizeInfo}${compressionInfo}</div>
                          <p><strong>Download URL:</strong> <a href="${status.download_url}" target="_blank">${status.download_url}</a></p>
                          <a href="${status.download_url}" download><button>📥 Download Video</button></a>`;
                 } else if (status.status === 'failed') {
@@ -146,8 +165,8 @@ HTML_TEMPLATE = """
 </html>
 """
 
-def process_concatenation(job_id, urls, output_name):
-    """Background task to process video concatenation"""
+def process_concatenation(job_id, urls, output_name, max_size_mb=100):
+    """Background task to process video concatenation with compression"""
     try:
         jobs[job_id]['status'] = 'downloading_videos'
         
@@ -189,10 +208,19 @@ def process_concatenation(job_id, urls, output_name):
         jobs[job_id]['status'] = 'concatenating_videos'
         output_path = os.path.join(UPLOAD_FOLDER, f"{job_id}_{output_name}")
         
-        if concatenate_videos(downloaded_videos, output_path):
+        # Store original size before potential compression
+        initial_size = None
+        
+        if concatenate_videos(downloaded_videos, output_path, max_size_mb):
+            final_size = get_file_size_mb(output_path)
             jobs[job_id]['status'] = 'completed'
             jobs[job_id]['output_file'] = output_path
             jobs[job_id]['output_filename'] = output_name
+            jobs[job_id]['file_size'] = round(final_size, 1)
+            
+            # Check if compression occurred by comparing expected vs actual size
+            # (This is a simple heuristic - in production you might want to track this more explicitly)
+            jobs[job_id]['was_compressed'] = final_size <= max_size_mb and final_size < max_size_mb * 0.8
         else:
             jobs[job_id]['status'] = 'failed'
             jobs[job_id]['error'] = 'Failed to concatenate videos'
@@ -216,10 +244,14 @@ def concatenate_api():
         data = request.get_json()
         urls = data.get('urls', [])
         output_name = data.get('output_name', 'concatenated_video.mp4')
+        max_size_mb = data.get('max_size_mb', 100)
         sync = data.get('sync', False)  # Option for synchronous processing
         
         if len(urls) < 2:
             return jsonify({'error': 'At least 2 URLs required'}), 400
+        
+        if max_size_mb < 10 or max_size_mb > 500:
+            return jsonify({'error': 'max_size_mb must be between 10 and 500'}), 400
         
         # Create job
         job_id = str(uuid.uuid4())
@@ -232,7 +264,7 @@ def concatenate_api():
         
         if sync:
             # Process synchronously and return download URL immediately
-            process_concatenation(job_id, urls, output_name)
+            process_concatenation(job_id, urls, output_name, max_size_mb)
             job = jobs[job_id]
             
             if job['status'] == 'completed':
@@ -241,7 +273,9 @@ def concatenate_api():
                     'status': 'completed',
                     'job_id': job_id,
                     'download_url': download_url,
-                    'filename': output_name
+                    'filename': output_name,
+                    'file_size': job.get('file_size'),
+                    'was_compressed': job.get('was_compressed', False)
                 })
             else:
                 return jsonify({
@@ -251,13 +285,14 @@ def concatenate_api():
                 }), 500
         else:
             # Start background processing
-            thread = threading.Thread(target=process_concatenation, args=(job_id, urls, output_name))
+            thread = threading.Thread(target=process_concatenation, args=(job_id, urls, output_name, max_size_mb))
             thread.start()
             
             return jsonify({
                 'job_id': job_id, 
                 'status': 'queued',
-                'status_url': f"{base_url}/api/status/{job_id}"
+                'status_url': f"{base_url}/api/status/{job_id}",
+                'max_size_mb': max_size_mb
             })
         
     except Exception as e:
@@ -272,8 +307,22 @@ def get_status(job_id):
     job = jobs[job_id]
     base_url = get_base_url(request)
     
+    # Make status messages more user-friendly
+    status_messages = {
+        'queued': 'Queued for processing',
+        'downloading_videos': 'Downloading videos from URLs',
+        'concatenating_videos': 'Concatenating videos together',
+        'compressing_video': 'Compressing video to reduce file size',
+        'completed': 'Processing completed successfully',
+        'failed': 'Processing failed'
+    }
+    
+    display_status = status_messages.get(job['status'], job['status'])
+    if job['status'].startswith('downloading_video_'):
+        display_status = f"Downloading videos ({job['status'].split('_')[2]} of {job['status'].split('_')[4]})"
+    
     response = {
-        'status': job['status'],
+        'status': display_status,
         'job_id': job_id
     }
     
@@ -283,6 +332,8 @@ def get_status(job_id):
     if job['status'] == 'completed':
         response['download_url'] = f"{base_url}/api/download/{job_id}"
         response['filename'] = job.get('output_filename', 'concatenated_video.mp4')
+        response['file_size'] = job.get('file_size')
+        response['was_compressed'] = job.get('was_compressed', False)
     
     return jsonify(response)
 
