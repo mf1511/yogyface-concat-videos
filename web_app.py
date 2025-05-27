@@ -66,7 +66,7 @@ HTML_TEMPLATE = """
             <input type="text" id="outputName" placeholder="Output filename (optional)" value="concatenated_video.mp4">
             <br><br>
             <label>Max file size (MB): </label>
-            <input type="number" id="maxSize" class="size-input" value="100" min="10" max="500">
+            <input type="number" id="maxSize" class="size-input" value="250" min="10" max="750">
             <small>Files larger than this will be automatically compressed</small>
             <br><br>
             <button type="submit">🚀 Start Concatenation</button>
@@ -98,7 +98,7 @@ HTML_TEMPLATE = """
                 .filter(url => url.trim() !== '');
             
             const outputName = document.getElementById('outputName').value || 'concatenated_video.mp4';
-            const maxSize = parseInt(document.getElementById('maxSize').value) || 100;
+            const maxSize = parseInt(document.getElementById('maxSize').value) || 250;
             
             if (urls.length < 2) {
                 alert('Please provide at least 2 video URLs');
@@ -170,7 +170,7 @@ HTML_TEMPLATE = """
 </html>
 """
 
-def process_concatenation(job_id, urls, output_name, max_size_mb=100):
+def process_concatenation(job_id, urls, output_name, max_size_mb=250):
     """Background task to process video concatenation with compression"""
     try:
         jobs[job_id]['status'] = 'downloading_videos'
@@ -309,14 +309,14 @@ def concatenate_api():
         data = request.get_json()
         urls = data.get('urls', [])
         output_name = data.get('output_name', 'concatenated_video.mp4')
-        max_size_mb = data.get('max_size_mb', 100)
+        max_size_mb = data.get('max_size_mb', 250)
         sync = data.get('sync', False)  # Option for synchronous processing
         
         if len(urls) < 2:
             return jsonify({'error': 'At least 2 URLs required'}), 400
         
-        if max_size_mb < 10 or max_size_mb > 500:
-            return jsonify({'error': 'max_size_mb must be between 10 and 500'}), 400
+        if max_size_mb < 10 or max_size_mb > 750:
+            return jsonify({'error': 'max_size_mb must be between 10 and 750'}), 400
         
         # Create job
         job_id = str(uuid.uuid4())

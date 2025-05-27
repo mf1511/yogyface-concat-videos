@@ -52,7 +52,7 @@ def get_file_size_mb(file_path):
     except OSError:
         return 0
 
-def compress_video(input_path, target_size_mb=100, max_attempts=4):
+def compress_video(input_path, target_size_mb=250, max_attempts=4):
     """
     Compresse une vidéo en utilisant une approche itérative pour atteindre la taille cible
     tout en préservant la meilleure qualité possible
@@ -247,7 +247,7 @@ def get_video_duration(video_path):
         pass
     return None
 
-def process_videos_from_urls(urls, output_path, keep_temp=False, max_size_mb=100):
+def process_videos_from_urls(urls, output_path, keep_temp=False, max_size_mb=250):
     """
     Process videos from URLs - main logic extracted for API usage
     Returns (success: bool, error_message: str)
@@ -333,8 +333,8 @@ def main():
                        help='Nom du fichier de sortie (défaut: video_finale.mp4)')
     parser.add_argument('--keep-temp', action='store_true', 
                        help='Garde les fichiers temporaires téléchargés')
-    parser.add_argument('--max-size', type=int, default=100,
-                       help='Taille maximale en MB avant compression (défaut: 100)')
+    parser.add_argument('--max-size', type=int, default=250,
+                       help='Taille maximale en MB avant compression (défaut: 250)')
     
     args = parser.parse_args()
     
